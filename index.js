@@ -1463,7 +1463,7 @@ function openFeishuSheet() {
 function getQuickRescanDateRange() {
     const now = new Date();
     return {
-        startMs: new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 0, 0, 0, 0).getTime(),
+        startMs: new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6, 0, 0, 0, 0).getTime(),
         endMs: new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0).getTime() - 1
     };
 }
