@@ -575,6 +575,10 @@
                         <input id="quickRescanManual" type="checkbox">
                         人审
                     </label>
+                    <label class="quick-rescan-manual">
+                        <input id="quickRescanAigc" type="checkbox">
+                        AIGC
+                    </label>
                     <button class="quick-rescan-option" type="button" id="quickScanGidBtn">扫GID</button>
                     <button class="quick-rescan-option" type="button" id="quickScanMaterialBtn">扫素材</button>
                 </div>
@@ -674,6 +678,7 @@
         const feedbackInput = document.getElementById('feedbackInput');
         const quickRescanInput = document.getElementById('quickRescanInput');
         const quickRescanManual = document.getElementById('quickRescanManual');
+        const quickRescanAigc = document.getElementById('quickRescanAigc');
         const quickScanGidBtn = document.getElementById('quickScanGidBtn');
         const quickScanMaterialBtn = document.getElementById('quickScanMaterialBtn');
         let toastTimer = null;
@@ -740,7 +745,10 @@
                 });
             }
             if (quickRescanManual.checked) {
-                url.searchParams.set('genTypeList', 'manual');
+                url.searchParams.append('genTypeList', 'manual');
+            }
+            if (quickRescanAigc.checked) {
+                url.searchParams.append('genTypeList', 'aigc');
             }
             window.open(url.toString(), '_blank');
         }

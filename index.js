@@ -1480,7 +1480,7 @@ function setQuickRescanStatus(message = '') {
     document.getElementById('quickRescanStatus').textContent = message;
 }
 
-function openRescan(type, value, manual = false) {
+function openRescan(type, value, genTypeList = []) {
     const keyword = sanitizeText(value).trim();
     if (!keyword) return false;
     const { startMs, endMs } = getQuickRescanDateRange();
@@ -1501,9 +1501,9 @@ function openRescan(type, value, manual = false) {
             url.searchParams.append('materialValueList', item);
         });
     }
-    if (manual) {
-        url.searchParams.set('genTypeList', 'manual');
-    }
+    genTypeList.forEach(gt => {
+        url.searchParams.append('genTypeList', gt);
+    });
     window.open(url.toString(), '_blank');
     return true;
 }
@@ -1517,7 +1517,10 @@ function openQuickRescan(type) {
         return;
     }
     setQuickRescanStatus('');
-    openRescan(type, keyword, document.getElementById('quickRescanManual').checked);
+    const genTypeList = [];
+    if (document.getElementById('quickRescanManual').checked) genTypeList.push('manual');
+    if (document.getElementById('quickRescanAigc').checked) genTypeList.push('aigc');
+    openRescan(type, keyword, genTypeList);
 }
 
 function closeKeywordRescanMenu() {
@@ -1563,6 +1566,12 @@ function showKeywordRescanMenu(chip) {
     manualCheckbox.type = 'checkbox';
     manualLabel.append(manualCheckbox, document.createTextNode('人审'));
 
+    const aigcLabel = document.createElement('label');
+    aigcLabel.className = 'keyword-rescan-manual';
+    const aigcCheckbox = document.createElement('input');
+    aigcCheckbox.type = 'checkbox';
+    aigcLabel.append(aigcCheckbox, document.createTextNode('AIGC'));
+
     const actions = document.createElement('div');
     actions.className = 'keyword-rescan-actions';
     [['gid', '回扫 GID'], ['material', '回扫素材']].forEach(([type, label]) => {
@@ -1571,13 +1580,16 @@ function showKeywordRescanMenu(chip) {
         button.className = 'keyword-rescan-action';
         button.textContent = label;
         button.addEventListener('click', () => {
-            openRescan(type, value, manualCheckbox.checked);
+            const genTypeList = [];
+            if (manualCheckbox.checked) genTypeList.push('manual');
+            if (aigcCheckbox.checked) genTypeList.push('aigc');
+            openRescan(type, value, genTypeList);
             closeKeywordRescanMenu();
         });
         actions.appendChild(button);
     });
 
-    menu.append(title, manualLabel, actions);
+    menu.append(title, manualLabel, aigcLabel, actions);
     document.body.appendChild(menu);
     activeKeywordRescanMenu = menu;
     positionKeywordRescanMenu(menu, chip);

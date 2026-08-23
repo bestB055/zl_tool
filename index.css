@@ -860,6 +860,7 @@ h1 {
     display: inline-flex;
     align-items: center;
     gap: 7px;
+    padding-right: 12px;
     margin-bottom: 12px;
     color: var(--muted);
     font-size: 0.86rem;
