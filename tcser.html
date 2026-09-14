@@ -562,6 +562,53 @@
             white-space: pre-wrap;
         }
 
+        .material-review-list {
+            display: grid;
+            gap: 8px;
+        }
+
+        .material-review-item {
+            overflow: hidden;
+            border: 1px solid rgba(36, 107, 254, 0.12);
+            border-radius: 8px;
+            background: #fff;
+        }
+
+        .material-review-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 7px 10px;
+            border-bottom: 1px solid var(--border);
+            background: #f8fafc;
+        }
+
+        .material-key {
+            color: #475467;
+            font-size: 0.76rem;
+            font-weight: 800;
+            overflow-wrap: anywhere;
+        }
+
+        .material-value {
+            padding: 10px;
+            font-size: 0.86rem;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+
+        .material-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px 14px;
+            padding: 7px 10px;
+            border-top: 1px solid var(--border);
+            color: var(--muted);
+            font-size: 0.72rem;
+        }
+
         .details-toggle {
             width: 100%;
         }
@@ -871,9 +918,54 @@
                 use_region_code_recall: '使用区域召回',
                 use_regional_push: '使用区域推送',
                 aigc_num: 'AIGC 文案数',
-                agent_label_res: 'Agent 标签结果'
+                agent_label_res: 'Agent 标签结果',
+                manual_audit_option: '人工审核选项',
+                xg_manual_audit_option: '西瓜人工审核选项',
+                refuse_reason: '拒绝原因',
+                note: '备注',
+                enqueue_type: '入队类型',
+                material_info_map: '素材信息',
+                modify_material_info_map: '修改后素材信息'
             };
             return labels[name] || name;
+        }
+
+        function formatBoolean(value) {
+            if (value === true || String(value).toLowerCase() === 'true') return '是';
+            if (value === false || String(value).toLowerCase() === 'false') return '否';
+            return value === undefined || value === null || value === '' ? '未填写' : String(value);
+        }
+
+        function getRefuseReasonLabel(value) {
+            const labels = {
+                low_quality_content: '低质内容'
+            };
+            if (!value) return '未填写';
+            return labels[value] ? `${labels[value]}（${value}）` : value;
+        }
+
+        function parseMaterialItems(fieldMap) {
+            const originalMap = parseNestedJson(fieldMap.get('material_info_map')) || {};
+            const modifiedMap = parseNestedJson(fieldMap.get('modify_material_info_map')) || {};
+            const keys = new Set([...Object.keys(originalMap), ...Object.keys(modifiedMap)]);
+
+            return Array.from(keys).map(mapKey => {
+                const original = originalMap[mapKey] && typeof originalMap[mapKey] === 'object'
+                    ? originalMap[mapKey]
+                    : {};
+                const modified = modifiedMap[mapKey] && typeof modifiedMap[mapKey] === 'object'
+                    ? modifiedMap[mapKey]
+                    : {};
+                const hasModifiedEntry = Object.prototype.hasOwnProperty.call(modifiedMap, mapKey);
+                return {
+                    key: String(modified.key || original.key || mapKey),
+                    value: String(modified.value ?? original.value ?? ''),
+                    modifyOption: modified.modify_option ?? original.modify_option ?? '',
+                    manualAuditStatus: modified.manual_audit_status ?? original.manual_audit_status ?? '',
+                    originalManualAuditStatus: original.manual_audit_status ?? '',
+                    hasModifiedEntry
+                };
+            });
         }
 
         function normalizeCandidate(item, index) {
@@ -908,6 +1000,7 @@
                 }));
             const fieldMap = new Map(allFields.map(field => [field.name, field.value]));
             const materialAudit = parseNestedJson(fieldMap.get('material_audit_res')) || {};
+            const materialItems = parseMaterialItems(fieldMap);
             const nestedCandidates = Array.isArray(materialAudit.common_material_contents)
                 ? materialAudit.common_material_contents
                 : [];
@@ -939,7 +1032,9 @@
             const primaryFields = new Set([
                 'can_push', 'source_cn', 'origin_text', 'video_create_time',
                 'author_nickname', 'author_cert_info', 'material_audit_res',
-                'pc_status', 'push_timeliness', 'time_period'
+                'pc_status', 'push_timeliness', 'time_period',
+                'manual_audit_option', 'xg_manual_audit_option', 'refuse_reason',
+                'note', 'enqueue_type', 'material_info_map', 'modify_material_info_map'
             ]);
             const details = allFields.filter(field => {
                 if (primaryFields.has(field.name)) return false;
@@ -969,11 +1064,18 @@
                     pcStatus: fieldMap.get('pc_status') || '',
                     timeliness: fieldMap.get('push_timeliness') || '',
                     timePeriod: fieldMap.get('time_period') || '',
-                    auditSource: fieldMap.get('audit_source_category') || ''
+                    auditSource: fieldMap.get('audit_source_category') || '',
+                    manualAuditOption: fieldMap.get('manual_audit_option') || '',
+                    xgManualAuditOption: fieldMap.get('xg_manual_audit_option') || '',
+                    refuseReason: fieldMap.get('refuse_reason') || '',
+                    note: fieldMap.get('note') || '',
+                    enqueueType: fieldMap.get('enqueue_type') || ''
                 },
-                originText: fieldMap.get('origin_text') || '',
+                recordType: materialItems.length > 0 ? 'material_manual_audit' : 'aigc_audit',
+                originText: fieldMap.get('origin_text') || materialItems[0]?.value || '',
                 candidates,
                 machineAudits,
+                materialItems,
                 details
             };
         }
@@ -1056,7 +1158,9 @@
         }
 
         function getPushStatus(summary) {
-            const canPush = String(summary.canPush || '').trim().toLowerCase();
+            const canPush = String(
+                summary.canPush || summary.manualAuditOption || summary.xgManualAuditOption || ''
+            ).trim().toLowerCase();
             const pcStatus = String(summary.pcStatus || '').trim().toLowerCase();
             if (canPush === 'pc' || ['yes', '是', 'true', '1', 'pc'].includes(pcStatus)) return 'pc';
             if (['是', 'yes', 'true', '1', 'pass'].includes(canPush)) return 'yes';
@@ -1086,8 +1190,10 @@
             const record = parsedRecords[currentRecordIndex];
             if (!record) return;
 
+            const isMaterialAudit = record.recordType === 'material_manual_audit';
             const pushStatus = getPushStatus(record.summary);
-            const author = [record.summary.author, record.summary.authorCert].filter(Boolean).join(' / ') || '未填写';
+            const author = [record.summary.author, record.summary.authorCert].filter(Boolean).join(' / ');
+            const source = record.summary.source || (isMaterialAudit ? '素材人工审核' : '来源未填写');
             const timeParts = [];
             if (record.summary.videoCreateTime) timeParts.push(`视频：${record.summary.videoCreateTime}`);
             if (record.meta.realAssignTime) timeParts.push(`分配：${record.meta.realAssignTime}`);
@@ -1099,9 +1205,11 @@
             html += '<div class="record-identity">';
             html += '<div class="record-source-line">';
             html += `<span class="record-number">Case ${currentRecordIndex + 1}</span>`;
-            html += `<span class="record-source">${escapeHtml(record.summary.source || '来源未填写')}</span>`;
+            html += `<span class="record-source">${escapeHtml(source)}</span>`;
             html += '</div>';
-            html += `<div class="record-info-line"><strong>作者：</strong>${escapeHtml(author)}</div>`;
+            if (author) {
+                html += `<div class="record-info-line"><strong>作者：</strong>${escapeHtml(author)}</div>`;
+            }
             html += `<div class="record-info-line"><strong>时间：</strong>${escapeHtml(timeParts.join('　') || '未填写')}</div>`;
             html += '</div>';
             html += '<div class="push-status-panel" aria-label="是否可推">';
@@ -1109,62 +1217,98 @@
             html += `<div class="push-status-option pc ${pushStatus === 'pc' ? 'active' : ''}"><strong>PC</strong><small>转 PC</small></div>`;
             html += `<div class="push-status-option no ${pushStatus === 'no' ? 'active' : ''}"><strong>否</strong><small>不可推</small></div>`;
             html += '</div></header>';
-            html += `<div class="timeliness-line">时效性：${escapeHtml(record.summary.timeliness || '未填写')}　｜　时间周期：${escapeHtml(record.summary.timePeriod || '未填写')}</div>`;
 
-            html += '<section class="record-block review-context">';
-            html += '<div class="review-context-column">';
-            html += '<h3 class="block-title">原始标题 / 文案</h3>';
-            html += `<div class="origin-text">${escapeHtml(record.originText || '未填写')}</div>`;
-            html += '</div>';
-            html += '<div class="review-context-column">';
-            html += `<h3 class="block-title">机审结果（${record.machineAudits.length} 条）</h3>`;
-            if (record.machineAudits.length > 0) {
-                html += '<div class="machine-audit">';
-                record.machineAudits.forEach(item => {
-                    const auditClass = getAuditClass(item.auditResult);
-                    const correctionText = item.corrections.length ? `纠错：${item.corrections.join('、')}` : '';
-                    html += '<div class="machine-audit-item"><div>';
-                    html += `<span class="machine-name">${escapeHtml(item.name)}</span>`;
-                    html += `<span class="machine-text">${escapeHtml(item.text)}</span>`;
-                    if (correctionText) html += `<div class="candidate-meta">${escapeHtml(correctionText)}</div>`;
-                    html += '</div>';
-                    html += `<span class="audit-badge ${auditClass}">${escapeHtml(getAuditLabel(item.auditResult))}</span>`;
-                    html += '</div>';
-                });
-                html += '</div>';
-            } else {
-                html += '<div class="candidate-meta">无机审结果</div>';
-            }
-            html += '</div></section>';
-
-            html += '<section class="record-block">';
-            html += `<h3 class="block-title">AIGC 候选文案（${record.candidates.length} 条）</h3>`;
-            if (record.candidates.length > 0) {
-                html += '<div class="candidate-list">';
-                record.candidates.forEach((candidate, candidateIndex) => {
-                    const auditClass = getAuditClass(candidate.auditResult);
-                    const textLength = candidate.fullText.replace(/\s/g, '').length;
-                    html += '<article class="candidate-card">';
-                    html += '<div class="candidate-topline">';
-                    html += `<span class="candidate-index">AI 文案 ${candidateIndex + 1} · ${textLength} 字 · ${candidate.type}</span>`;
-                    html += `<span class="audit-badge ${auditClass}">${escapeHtml(getAuditLabel(candidate.auditResult))}</span>`;
-                    html += '</div>';
-                    html += `<div class="candidate-title">${escapeHtml(candidate.title || candidate.fullText)}</div>`;
-                    if (candidate.content) html += `<div class="candidate-content">${escapeHtml(candidate.content)}</div>`;
-                    const metaParts = [];
-                    if (candidate.genType) metaParts.push(`类型：${candidate.genType}`);
-                    if (candidate.taskIds.length) metaParts.push(`任务：${candidate.taskIds.join('、')}`);
-                    if (candidate.corrections.length) metaParts.push(`纠错：${candidate.corrections.join('、')}`);
-                    if (metaParts.length) {
-                        html += `<div class="candidate-footer"><span class="candidate-meta">${escapeHtml(metaParts.join(' · '))}</span></div>`;
+            if (isMaterialAudit) {
+                const auditFacts = [
+                    `人工审核：${record.summary.manualAuditOption || '未填写'}`,
+                    `西瓜人工审核：${record.summary.xgManualAuditOption || '未填写'}`,
+                    `拒绝原因：${getRefuseReasonLabel(record.summary.refuseReason)}`,
+                    `入队类型：${record.summary.enqueueType || '未填写'}`
+                ];
+                if (record.summary.note) auditFacts.push(`备注：${record.summary.note}`);
+                html += `<div class="timeliness-line">${escapeHtml(auditFacts.join('　｜　'))}</div>`;
+                html += '<section class="record-block">';
+                html += `<h3 class="block-title">审核素材（${record.materialItems.length} 项）</h3>`;
+                html += '<div class="material-review-list">';
+                record.materialItems.forEach(item => {
+                    const formattedStatus = formatBoolean(item.manualAuditStatus);
+                    const statusClass = formattedStatus === '是'
+                        ? 'pass'
+                        : (formattedStatus === '否' ? 'refuse' : 'unknown');
+                    const meta = [
+                        `修改选项：${item.modifyOption === '' ? '未填写' : item.modifyOption}`,
+                        `人工审核状态：${formatBoolean(item.manualAuditStatus)}`
+                    ];
+                    if (item.hasModifiedEntry) {
+                        meta.push(`原始审核状态：${formatBoolean(item.originalManualAuditStatus)}`);
                     }
+                    html += '<article class="material-review-item">';
+                    html += '<div class="material-review-head">';
+                    html += `<span class="material-key">${escapeHtml(item.key)}</span>`;
+                    html += `<span class="audit-badge ${statusClass}">${escapeHtml(formattedStatus)}</span>`;
+                    html += '</div>';
+                    html += `<div class="material-value">${escapeHtml(item.value || '未填写')}</div>`;
+                    html += `<div class="material-meta">${meta.map(value => `<span>${escapeHtml(value)}</span>`).join('')}</div>`;
                     html += '</article>';
                 });
-                html += '</div>';
+                html += '</div></section>';
             } else {
-                html += '<div class="candidate-meta">未找到 AIGC 候选文案</div>';
+                html += `<div class="timeliness-line">时效性：${escapeHtml(record.summary.timeliness || '未填写')}　｜　时间周期：${escapeHtml(record.summary.timePeriod || '未填写')}</div>`;
+                html += '<section class="record-block review-context">';
+                html += '<div class="review-context-column">';
+                html += '<h3 class="block-title">原始标题 / 文案</h3>';
+                html += `<div class="origin-text">${escapeHtml(record.originText || '未填写')}</div>`;
+                html += '</div>';
+                html += '<div class="review-context-column">';
+                html += `<h3 class="block-title">机审结果（${record.machineAudits.length} 条）</h3>`;
+                if (record.machineAudits.length > 0) {
+                    html += '<div class="machine-audit">';
+                    record.machineAudits.forEach(item => {
+                        const auditClass = getAuditClass(item.auditResult);
+                        const correctionText = item.corrections.length ? `纠错：${item.corrections.join('、')}` : '';
+                        html += '<div class="machine-audit-item"><div>';
+                        html += `<span class="machine-name">${escapeHtml(item.name)}</span>`;
+                        html += `<span class="machine-text">${escapeHtml(item.text)}</span>`;
+                        if (correctionText) html += `<div class="candidate-meta">${escapeHtml(correctionText)}</div>`;
+                        html += '</div>';
+                        html += `<span class="audit-badge ${auditClass}">${escapeHtml(getAuditLabel(item.auditResult))}</span>`;
+                        html += '</div>';
+                    });
+                    html += '</div>';
+                } else {
+                    html += '<div class="candidate-meta">无机审结果</div>';
+                }
+                html += '</div></section>';
+
+                html += '<section class="record-block">';
+                html += `<h3 class="block-title">AIGC 候选文案（${record.candidates.length} 条）</h3>`;
+                if (record.candidates.length > 0) {
+                    html += '<div class="candidate-list">';
+                    record.candidates.forEach((candidate, candidateIndex) => {
+                        const auditClass = getAuditClass(candidate.auditResult);
+                        const textLength = candidate.fullText.replace(/\s/g, '').length;
+                        html += '<article class="candidate-card">';
+                        html += '<div class="candidate-topline">';
+                        html += `<span class="candidate-index">AI 文案 ${candidateIndex + 1} · ${textLength} 字 · ${candidate.type}</span>`;
+                        html += `<span class="audit-badge ${auditClass}">${escapeHtml(getAuditLabel(candidate.auditResult))}</span>`;
+                        html += '</div>';
+                        html += `<div class="candidate-title">${escapeHtml(candidate.title || candidate.fullText)}</div>`;
+                        if (candidate.content) html += `<div class="candidate-content">${escapeHtml(candidate.content)}</div>`;
+                        const metaParts = [];
+                        if (candidate.genType) metaParts.push(`类型：${candidate.genType}`);
+                        if (candidate.taskIds.length) metaParts.push(`任务：${candidate.taskIds.join('、')}`);
+                        if (candidate.corrections.length) metaParts.push(`纠错：${candidate.corrections.join('、')}`);
+                        if (metaParts.length) {
+                            html += `<div class="candidate-footer"><span class="candidate-meta">${escapeHtml(metaParts.join(' · '))}</span></div>`;
+                        }
+                        html += '</article>';
+                    });
+                    html += '</div>';
+                } else {
+                    html += '<div class="candidate-meta">未找到 AIGC 候选文案</div>';
+                }
+                html += '</section>';
             }
-            html += '</section>';
 
             if (record.details.length > 0) {
                 html += '<section class="record-block">';
@@ -1312,20 +1456,35 @@
             return parsedRecords.map((record, index) => {
                 const row = {
                     '记录编号': index + 1,
+                    '记录类型': record.recordType === 'material_manual_audit' ? '素材人工审核' : 'AIGC 审核',
                     '分配时间': record.meta.realAssignTime,
                     '完成时间': record.meta.realResolveTime,
                     '审核耗时': formatDuration(record.meta.durationSeconds),
-                    '视频来源': record.summary.source,
+                    '视频来源': record.summary.source || (record.recordType === 'material_manual_audit' ? '素材人工审核' : ''),
                     '作者昵称': record.summary.author,
                     '作者认证': record.summary.authorCert,
                     '视频创建时间': record.summary.videoCreateTime,
-                    '是否可推': record.summary.canPush,
+                    '是否可推': record.summary.canPush || record.summary.manualAuditOption || record.summary.xgManualAuditOption,
                     'PC 状态': record.summary.pcStatus,
                     '时效性': record.summary.timeliness,
                     '时间周期': record.summary.timePeriod,
                     '审核来源分类': record.summary.auditSource,
+                    '人工审核选项': record.summary.manualAuditOption,
+                    '西瓜人工审核选项': record.summary.xgManualAuditOption,
+                    '拒绝原因': getRefuseReasonLabel(record.summary.refuseReason),
+                    '备注': record.summary.note,
+                    '入队类型': record.summary.enqueueType,
                     '原始标题/文案': record.originText
                 };
+
+                record.materialItems.forEach((item, materialIndex) => {
+                    const prefix = `审核素材${materialIndex + 1}`;
+                    row[`${prefix}_字段`] = item.key;
+                    row[`${prefix}_内容`] = item.value;
+                    row[`${prefix}_修改选项`] = item.modifyOption;
+                    row[`${prefix}_人工审核状态`] = formatBoolean(item.manualAuditStatus);
+                    row[`${prefix}_原始审核状态`] = formatBoolean(item.originalManualAuditStatus);
+                });
 
                 record.candidates.forEach((candidate, candidateIndex) => {
                     const prefix = `AI文案${candidateIndex + 1}`;

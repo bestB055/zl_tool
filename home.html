@@ -380,6 +380,31 @@
             margin-top: 14px;
         }
 
+        .tcs-review-group {
+            margin-top: 14px;
+            padding-top: 14px;
+            border-top: 1px solid var(--border);
+        }
+
+        .tcs-review-title {
+            margin-bottom: 10px;
+            color: var(--text);
+            font-size: 0.9rem;
+            font-weight: 800;
+        }
+
+        .tcs-review-actions {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .tcs-review-btn {
+            width: 100%;
+            cursor: pointer;
+            font: inherit;
+        }
+
         .feedback-footer {
             display: flex;
             flex-direction: column;
@@ -537,6 +562,10 @@
             .quick-rescan-option {
                 flex: 1;
             }
+
+            .tcs-review-actions {
+                grid-template-columns: 1fr;
+            }
         }
     </style>
 </head>
@@ -588,6 +617,15 @@
                 <a class="module-link-btn" href="https://bee.bytedance.net/1533/combine-imc/17275/data" target="_blank" rel="noopener noreferrer">拦截直播标题</a>
                 <a class="module-link-btn" href="https://bee.bytedance.net/1533/combine-imc/16745/data" target="_blank" rel="noopener noreferrer">拦截直播昵称</a>
                 <a class="module-link-btn" href="https://bee.bytedance.net/1533/combine-imc/17557/data" target="_blank" rel="noopener noreferrer">主播黑名单</a>
+            </div>
+
+            <div class="tcs-review-group">
+                <h3 class="tcs-review-title">数字人驳回情况回看</h3>
+                <div class="tcs-review-actions">
+                    <button class="module-link-btn tcs-review-btn" type="button" data-tcs-project="7621823421143433769">PGC与优质UGC</button>
+                    <button class="module-link-btn tcs-review-btn" type="button" data-tcs-project="6986157117820404237">大事件人审-初审</button>
+                    <button class="module-link-btn tcs-review-btn" type="button" data-tcs-project="7371285833334211087">普通UGC</button>
+                </div>
             </div>
         </section>
 
@@ -690,6 +728,7 @@
         const quickRescanAigc = document.getElementById('quickRescanAigc');
         const quickScanGidBtn = document.getElementById('quickScanGidBtn');
         const quickScanMaterialBtn = document.getElementById('quickScanMaterialBtn');
+        const tcsReviewButtons = document.querySelectorAll('[data-tcs-project]');
         let toastTimer = null;
 
         function renderToday() {
@@ -762,6 +801,22 @@
             window.open(url.toString(), '_blank');
         }
 
+        function buildTcsUrl(projectId = '6986157117820404237') {
+            const formatDateTime = (date) => {
+                const pad = (value) => String(value).padStart(2, '0');
+                return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+            };
+            const end = new Date();
+            const start = new Date(end.getTime() - 60 * 60 * 1000);
+            const resolveTime = `${formatDateTime(start)},${formatDateTime(end)}`;
+
+            return `https://tcs.bytedance.net/project/${projectId}/globaltasks`
+                + `?resolve_time=${encodeURIComponent(resolveTime)}`
+                + '&status=3&audit_status=&should_verify_count='
+                + '&sort_str=closed_time:desc&latest=closed&abandon_reason=&page=1&call_back=&per_page=100'
+                + `&verify_data=${encodeURIComponent('can_push:0')}`;
+        }
+
         placeholders.forEach((item) => {
             item.addEventListener('click', () => {
                 showToast(`${item.dataset.feature}入口已预留，待飞书数据源完善后接入。`);
@@ -772,6 +827,11 @@
         quickScanMaterialBtn.addEventListener('click', () => openQuickRescan('material'));
         quickRescanInput.addEventListener('keydown', (event) => {
             if (event.key === 'Enter') openQuickRescan('gid');
+        });
+        tcsReviewButtons.forEach((button) => {
+            button.addEventListener('click', () => {
+                window.open(buildTcsUrl(button.dataset.tcsProject), '_blank', 'noopener,noreferrer');
+            });
         });
 
         feedbackToggle.addEventListener('click', () => {
