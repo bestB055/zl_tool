@@ -649,7 +649,7 @@ h1 {
     font-weight: 800;
     transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
 }
-.copy-btn, .export-excel-btn, .danger-btn {
+.copy-btn, .export-csv-btn, .danger-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -682,7 +682,7 @@ h1 {
     box-shadow: 0 12px 28px rgba(21, 54, 120, 0.12);
 }
 .generate-hover:hover .generate-hint { display: block; }
-.export-excel-btn {
+.export-csv-btn {
     background: #fff;
     border: 1px solid rgba(36, 107, 254, 0.16);
     color: var(--primary-dark);
@@ -694,7 +694,7 @@ h1 {
     font-weight: 800;
     transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
 }
-.export-excel-btn:hover {
+.export-csv-btn:hover {
     background: #fff;
     transform: translateY(-2px);
     box-shadow: 0 12px 28px rgba(36, 107, 254, 0.14);

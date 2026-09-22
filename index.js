@@ -1395,12 +1395,7 @@ function copyResult() {
     });
 }
 
-function exportToExcel() {
-    if (!window.XLSX || !XLSX.utils) {
-        alert('导出失败：未能加载 XLSX 依赖，请检查网络或稍后重试');
-        return;
-    }
-
+function exportToCsv() {
     const lines = getOutputLines();
     if (lines.length === 0) {
         alert('导出结果为空');
@@ -1434,18 +1429,17 @@ function exportToExcel() {
         worksheetData.push([keyword, expireTime]);
     });
 
-    const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, '拆词表');
-
-    const wbout = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
-    const blob = new Blob([wbout], {
-        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    const escapeCsvCell = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+    const csvContent = worksheetData
+        .map(row => row.map(escapeCsvCell).join(','))
+        .join('\r\n');
+    const blob = new Blob(['\uFEFF', csvContent], {
+        type: 'text/csv;charset=utf-8'
     });
     const blobUrl = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = blobUrl;
-    a.download = `拆词表_${fileTimestamp}.xlsx`;
+    a.download = `拆词表_${fileTimestamp}.csv`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -1639,7 +1633,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
     document.getElementById('addColumnBtn').addEventListener('click', addColumn);
-    document.getElementById('exportExcelBtn').addEventListener('click', exportToExcel);
+    document.getElementById('exportCsvBtn').addEventListener('click', exportToCsv);
     document.getElementById('copyBtn').addEventListener('click', copyResult);
     document.getElementById('feishuDocBtn').addEventListener('click', openFeishuDoc);
     document.getElementById('feishuSheetBtn').addEventListener('click', openFeishuSheet);
