@@ -6,7 +6,7 @@
     <title>自动排班 - 带班首页</title>
     <link rel="stylesheet" href="recent-updates.css?v=20260727-1">
     <script src="recent-updates.js?v=20260724-2" defer></script>
-    <link rel="stylesheet" href="schedule.css?v=20260803-1">
+    <link rel="stylesheet" href="schedule.css?v=20260922-1">
 </head>
 <body>
     <main class="page">
@@ -25,6 +25,7 @@
                 <div class="toolbar">
                     <button class="btn primary" type="button" id="solveBtn">本地排班</button>
                     <button class="btn ghost" type="button" id="aiSolveBtn">AI 排班</button>
+                    <a class="btn ghost ai-login-link" id="scheduleAiLoginLink" target="_blank" rel="noopener noreferrer" hidden>登录 AI 服务</a>
                     <button class="btn ghost" type="button" id="clearBtn">清空排班</button>
                 </div>
             </div>
@@ -164,7 +165,7 @@
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-    <script src="app-config.js"></script>
-    <script src="schedule.js?v=20260801-18"></script>
+    <script src="app-config.js?v=20260922-1"></script>
+    <script src="schedule.js?v=20260922-1"></script>
 </body>
 </html>

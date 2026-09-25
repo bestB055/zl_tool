@@ -2,5 +2,6 @@ name = "daiban-home-api"
 main = "src/index.js"
 compatibility_date = "2026-07-19"
 
+# DEEPSEEK_API_KEY is provisioned as a Worker Secret by GitHub Actions.
 [vars]
 ALLOWED_ORIGIN = ""

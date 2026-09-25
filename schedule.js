@@ -22,10 +22,8 @@ const schedulePolicy = {
     candidatePureRestBenefitCap: 32,
     dailyShiftImbalancePenalty: 16,
 };
-const DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
-const DEEPSEEK_API_KEY_STORAGE = 'split-word-deepseek-api-key';
 const DEPLOYMENT_CONFIG = window.DAIBAN_HOME_CONFIG || {};
-const CONFIGURED_DEEPSEEK_API_KEY = normalizeApiKey(DEPLOYMENT_CONFIG.DEEPSEEK_API_KEY || '');
+const DEEPSEEK_PROXY_API_URL = String(DEPLOYMENT_CONFIG.DEEPSEEK_PROXY_API_URL || '').trim();
 const AI_SOLUTION_COUNT = 3;
 const SCHEDULE_RULES_URL = '排班提示.txt?v=20260801-7';
 const MAX_ARCHIVE_FILE_SIZE = 20 * 1024 * 1024;
@@ -111,6 +109,7 @@ const importArchiveBtn = document.getElementById('importArchiveBtn');
 const solveBtn = document.getElementById('solveBtn');
 const aiSolveBtn = document.getElementById('aiSolveBtn');
 const aiSolveStatus = document.getElementById('aiSolveStatus');
+const scheduleAiLoginLink = document.getElementById('scheduleAiLoginLink');
 const baseTotalInput = document.getElementById('baseTotalInput');
 const baseMorningInput = document.getElementById('baseMorningInput');
 const baseNightInput = document.getElementById('baseNightInput');
@@ -193,24 +192,23 @@ function escapeHtml(value) {
         .replace(/'/g, '&#39;');
 }
 
-function normalizeApiKey(value) {
-    return sanitizeText(value).trim().replace(/^Bearer\s+/i, '');
-}
-
-function getDeepSeekApiKey() {
-    if (CONFIGURED_DEEPSEEK_API_KEY) {
-        return CONFIGURED_DEEPSEEK_API_KEY;
-    }
-    try {
-        return normalizeApiKey(localStorage.getItem(DEEPSEEK_API_KEY_STORAGE) || '');
-    } catch {
-        return '';
-    }
-}
-
 function setAiSolveStatus(message = '', isError = false) {
     aiSolveStatus.textContent = message;
     aiSolveStatus.classList.toggle('error', isError);
+}
+
+function configureAiServiceLogin() {
+    if (!scheduleAiLoginLink || !DEEPSEEK_PROXY_API_URL) return;
+    try {
+        const url = new URL(DEEPSEEK_PROXY_API_URL);
+        url.pathname = '/auth-check';
+        url.search = '';
+        url.hash = '';
+        scheduleAiLoginLink.href = url.toString();
+        scheduleAiLoginLink.hidden = false;
+    } catch {
+        scheduleAiLoginLink.hidden = true;
+    }
 }
 
 async function loadScheduleRewardRules(signal) {
@@ -384,51 +382,44 @@ function extractJson(content, stage = 'DeepSeek') {
     throw new Error(`${stage}返回的 JSON 无法解析，请重试`);
 }
 
-async function callDeepSeekJson(apiKey, systemPrompt, input, signal) {
+async function callDeepSeekJson(input, signal) {
+    if (!DEEPSEEK_PROXY_API_URL) {
+        throw new Error('未配置 DeepSeek AI 服务代理地址');
+    }
+
     let response;
     try {
-        response = await fetch(DEEPSEEK_API_URL, {
+        response = await fetch(DEEPSEEK_PROXY_API_URL, {
             method: 'POST',
             signal,
+            credentials: 'include',
             headers: {
                 'Content-Type': 'application/json',
-                Authorization: `Bearer ${apiKey}`,
             },
             body: JSON.stringify({
-                model: 'deepseek-v4-flash',
-                temperature: 0.45,
-                max_tokens: 16000,
-                response_format: { type: 'json_object' },
-                messages: [
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: input },
-                ],
+                operation: 'schedule-generation',
+                input,
             }),
         });
     } catch (error) {
         if (error.name === 'AbortError' || signal?.aborted) {
             throw new DOMException('AI 排班已中断', 'AbortError');
         }
-        throw new Error('AI 排班网络请求失败');
+        throw new Error('AI 排班网络请求失败，请先登录 AI 服务');
+    }
+
+    const contentType = response.headers.get('Content-Type') || '';
+    if (!contentType.includes('application/json')) {
+        throw new Error('AI 排班未获得授权，请先登录 AI 服务');
     }
     const payload = await response.json().catch(() => ({}));
+    if (response.status === 401 || response.status === 403) {
+        throw new Error('AI 排班未获得授权，请先登录 AI 服务');
+    }
     if (!response.ok) {
-        throw new Error(`AI 排班失败：${payload.error?.message || `HTTP ${response.status}`}`);
+        throw new Error(`AI 排班失败：${payload.message || payload.error || `HTTP ${response.status}`}`);
     }
-    const choice = payload.choices?.[0] || {};
-    const message = choice.message || {};
-    const messageContent = Array.isArray(message.content)
-        ? message.content.map((item) => item?.text || item?.content || '').join('')
-        : message.content;
-    const rawResult = messageContent
-        || message.tool_calls?.[0]?.function?.arguments
-        || message.function_call?.arguments
-        || message.reasoning_content
-        || '';
-    if (choice.finish_reason === 'length') {
-        throw new Error('AI 排班返回内容被截断，请重试');
-    }
-    return normalizeAiJsonResult(extractJson(rawResult, 'AI 排班'));
+    return normalizeAiJsonResult(payload.result);
 }
 
 function getRule(personId, dateKey) {
@@ -1731,19 +1722,10 @@ function serializeCompactAiRules() {
 }
 
 async function requestAiScheduleSolutions(localSolutions, signal) {
-    const apiKey = getDeepSeekApiKey();
-    if (!apiKey) {
-        throw new Error('未配置 DeepSeek API Key');
+    if (!DEEPSEEK_PROXY_API_URL) {
+        throw new Error('未配置 DeepSeek AI 服务代理地址');
     }
     const rewardRules = await loadScheduleRewardRules(signal);
-    const baseSystemPrompt = [
-        '根据输入生成1个完整合法排班。dates每项为[日期,总人数最低,早班最低,晚班最低]；people每项为[ID,偏好,强制班次,目标工作天数,最多工作天数,带薪休假天数]；rules每项为[人员ID,日期,必须上,固定不上,是否休假]。',
-        '严格遵守下方硬约束并优化得分。baseline仅供改进；avoid中的方案不得原样重复；repair.errors必须修复。',
-        '只返回紧凑JSON：{"solutions":[{"n":"名称","s":"100字内摘要","d":[[早班ID数组,常班ID数组,晚班ID数组],...]}]}。',
-        'd必须与dates等长且顺序一致；只用输入ID；禁止Markdown、注释、尾逗号和额外字段。',
-        '',
-        rewardRules,
-    ].join('\n');
     const validPeople = new Set(state.people.map((person) => person.id));
     const validDates = dates.map((date) => date.key);
     const accepted = [];
@@ -1757,10 +1739,13 @@ async function requestAiScheduleSolutions(localSolutions, signal) {
         if (signal.aborted) {
             throw new DOMException('AI 排班已中断', 'AbortError');
         }
-        const input = JSON.stringify(buildAiScheduleInput(localSolutions, accepted, repair));
+        const input = {
+            ...buildAiScheduleInput(localSolutions, accepted, repair),
+            rewardRules,
+        };
         let result;
         try {
-            result = await callDeepSeekJson(apiKey, baseSystemPrompt, input, signal);
+            result = await callDeepSeekJson(input, signal);
             parseFailures = 0;
         } catch (error) {
             if (!/JSON|截断/.test(error.message) || parseFailures >= 2) {
@@ -4084,4 +4069,5 @@ window.addEventListener('resize', () => {
 calendarWrap.addEventListener('scroll', scheduleFrozenHeaderSync, { passive: true });
 
 syncStrategyEditorType();
+configureAiServiceLogin();
 renderAll();

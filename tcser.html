@@ -299,6 +299,53 @@
             flex-wrap: wrap;
         }
 
+        .field-picker {
+            position: relative;
+        }
+
+        .field-picker > summary {
+            list-style: none;
+        }
+
+        .field-picker > summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .field-picker-menu {
+            position: absolute;
+            z-index: 20;
+            top: calc(100% + 8px);
+            right: 0;
+            width: min(420px, 85vw);
+            padding: 12px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: #fff;
+            box-shadow: 0 12px 30px rgba(16, 24, 40, 0.16);
+        }
+
+        .field-picker-actions {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        .field-picker-list {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 7px 12px;
+            max-height: 320px;
+            overflow-y: auto;
+        }
+
+        .field-picker-option {
+            display: flex;
+            align-items: flex-start;
+            gap: 6px;
+            font-size: 0.78rem;
+            overflow-wrap: anywhere;
+        }
+
         .record-card {
             background: #fff;
             border: 1px solid rgba(36, 107, 254, 0.14);
@@ -533,6 +580,38 @@
         .machine-audit {
             display: grid;
             gap: 7px;
+        }
+
+        .fuse-label-summary {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            background: rgba(36, 107, 254, 0.05);
+        }
+
+        .fuse-label-item {
+            min-width: 0;
+            padding: 10px 12px;
+            border: 1px solid rgba(36, 107, 254, 0.16);
+            border-radius: 8px;
+            background: #fff;
+        }
+
+        .fuse-label-key {
+            display: block;
+            margin-bottom: 4px;
+            color: var(--muted);
+            font-size: 0.72rem;
+            font-weight: 700;
+        }
+
+        .fuse-label-value {
+            color: var(--primary-dark);
+            font-size: 1rem;
+            font-weight: 800;
+            overflow-wrap: anywhere;
         }
 
         .machine-audit-item {
@@ -788,7 +867,7 @@
 
             <div class="tab-panel active" id="textPanel">
                 <div class="input-area">
-                    <textarea class="json-textarea" id="jsonInput" placeholder="在此粘贴一条或多条 TCS JSON 数据，系统将自动解析 mainForm 中的字段并展示。&#10;&#10;支持格式：&#10;  - 单条 JSON 对象&#10;  - JSON 数组 [{...}, {...}]&#10;  - 多行 JSON（每行一条）"></textarea>
+                    <textarea class="json-textarea" id="jsonInput" placeholder="在此粘贴一条或多条 JSON 数据，系统将自动识别 TCS mainForm 或 DouyinSubmissionInfo 格式。&#10;&#10;支持格式：&#10;  - 单条 JSON 对象&#10;  - JSON 数组 [{...}, {...}]&#10;  - 多行 JSON（每行一条）"></textarea>
                     <div class="parse-bar">
                         <button class="btn primary" id="textParseBtn">解析</button>
                         <span class="parse-status" id="textParseStatus"></span>
@@ -823,6 +902,16 @@
                     <button class="nav-btn" type="button" id="nextCaseBtn">下一条 →</button>
                 </div>
                 <div class="export-bar">
+                    <details class="field-picker" id="exportFieldPicker">
+                        <summary class="btn">选择字段</summary>
+                        <div class="field-picker-menu">
+                            <div class="field-picker-actions">
+                                <button class="btn" type="button" id="selectAllFieldsBtn">全选</button>
+                                <button class="btn" type="button" id="clearAllFieldsBtn">清空</button>
+                            </div>
+                            <div class="field-picker-list" id="exportFieldList"></div>
+                        </div>
+                    </details>
                     <button class="btn green" id="exportExcelBtn">导出 Excel</button>
                     <button class="btn" id="copyResultBtn">复制结果</button>
                     <button class="btn" id="feishuSheetBtn">复制并打开飞书表格</button>
@@ -842,8 +931,10 @@
         const pageIndicator = document.getElementById('pageIndicator');
         const previousCaseBtn = document.getElementById('previousCaseBtn');
         const nextCaseBtn = document.getElementById('nextCaseBtn');
+        const exportFieldList = document.getElementById('exportFieldList');
         let toastTimer = null;
         let parsedRecords = [];
+        let selectedExportFields = new Set();
         let currentRecordIndex = 0;
         let lastCaseNavigationAt = 0;
 
@@ -872,18 +963,101 @@
             return name && name.startsWith('agent_aigc_text_audit_res_');
         }
 
-        function parseNestedJson(value) {
-            let parsed = value;
-            for (let i = 0; i < 2 && typeof parsed === 'string'; i++) {
-                const trimmed = parsed.trim();
-                if (!trimmed) return null;
-                try {
-                    parsed = JSON.parse(trimmed);
-                } catch (error) {
-                    return null;
+        function preserveLargeIntegers(text) {
+            let output = '';
+            let inString = false;
+            let escaped = false;
+            for (let i = 0; i < text.length; i++) {
+                const char = text[i];
+                if (inString) {
+                    output += char;
+                    if (escaped) escaped = false;
+                    else if (char === '\\') escaped = true;
+                    else if (char === '"') inString = false;
+                    continue;
+                }
+                if (char === '"') {
+                    inString = true;
+                    output += char;
+                    continue;
+                }
+                if (char === '-' || /\d/.test(char)) {
+                    const match = text.slice(i).match(/^-?\d+/);
+                    const token = match ? match[0] : char;
+                    const previous = output.trimEnd().slice(-1);
+                    const next = text.slice(i + token.length).trimStart()[0];
+                    if (token.replace('-', '').length >= 16 && /[:\[,]$/.test(previous) && /[,}\]]/.test(next)) {
+                        output += `"${token}"`;
+                    } else {
+                        output += token;
+                    }
+                    i += token.length - 1;
+                    continue;
+                }
+                output += char;
+            }
+            return output;
+        }
+
+        function normalizeJsonSource(text) {
+            return String(text ?? '')
+                .replace(/^\uFEFF/, '')
+                .replace(/^\s*```(?:json|javascript|js)?\s*/i, '')
+                .replace(/\s*```\s*$/, '')
+                .split(/\r?\n/)
+                .map(line => line.replace(/^\s*\/\/\s?(?=[{["'])/, ''))
+                .join('\n')
+                .trim();
+        }
+
+        function repairJsonSource(text) {
+            let output = '';
+            let inString = false;
+            let escaped = false;
+            for (const char of text) {
+                if (inString) {
+                    if (!escaped && char === '"') inString = false;
+                    if (!escaped && char === '\n') output += '\\n';
+                    else if (!escaped && char === '\r') output += '\\r';
+                    else if (!escaped && char === '\t') output += '\\t';
+                    else output += char;
+                    if (escaped) escaped = false;
+                    else if (char === '\\') escaped = true;
+                } else {
+                    if (char === '"') inString = true;
+                    output += char === '\u00a0' ? ' ' : char;
                 }
             }
-            return parsed && typeof parsed === 'object' ? parsed : null;
+            return output.replace(/,\s*([}\]])/g, '$1');
+        }
+
+        function parseJsonValue(text) {
+            const normalized = normalizeJsonSource(text);
+            if (!normalized) throw new Error('JSON 内容为空');
+            try {
+                return JSON.parse(preserveLargeIntegers(normalized));
+            } catch (strictError) {
+                return JSON.parse(preserveLargeIntegers(repairJsonSource(normalized)));
+            }
+        }
+
+        function decodeJsonLayers(value, maxDepth = 5) {
+            let parsed = value;
+            for (let i = 0; i < maxDepth && typeof parsed === 'string'; i++) {
+                const trimmed = normalizeJsonSource(parsed);
+                if (!trimmed || !/^[{[\"]/.test(trimmed)) break;
+                parsed = parseJsonValue(trimmed);
+            }
+            return parsed;
+        }
+
+        function parseNestedJson(value) {
+            try {
+                const parsed = decodeJsonLayers(value);
+                return parsed && typeof parsed === 'object' ? parsed : null;
+            } catch (error) {
+                return null;
+            }
         }
 
         function getAuditLabel(result) {
@@ -989,7 +1163,89 @@
             };
         }
 
+        function flattenSubmissionFields(value, path = '', fields = [], depth = 0, maxDepth = 2) {
+            if (depth >= maxDepth) {
+                let displayValue = value;
+                if (value && typeof value === 'object') {
+                    try {
+                        displayValue = JSON.stringify(value);
+                    } catch (error) {
+                        displayValue = String(value);
+                    }
+                }
+                fields.push({
+                    name: path,
+                    value: displayValue === undefined || displayValue === null ? '' : String(displayValue)
+                });
+                return fields;
+            }
+
+            const nested = typeof value === 'string' && /^[{[]/.test(value.trim())
+                ? parseNestedJson(value)
+                : null;
+            const current = nested || value;
+            if (Array.isArray(current)) {
+                if (current.length === 0) fields.push({ name: path, value: '[]' });
+                current.forEach((item, index) => {
+                    flattenSubmissionFields(item, `${path}[${index}]`, fields, depth + 1, maxDepth);
+                });
+            } else if (current && typeof current === 'object') {
+                const entries = Object.entries(current);
+                if (entries.length === 0) fields.push({ name: path, value: '{}' });
+                entries.forEach(([key, item]) => {
+                    flattenSubmissionFields(item, path ? `${path}.${key}` : key, fields, depth + 1, maxDepth);
+                });
+            } else {
+                fields.push({
+                    name: path,
+                    value: current === undefined || current === null ? '' : String(current)
+                });
+            }
+            return fields;
+        }
+
+        function parseSubmissionRecord(jsonObj) {
+            const rawSubmission = jsonObj.DouyinSubmissionInfo;
+            const submission = parseNestedJson(rawSubmission)
+                || (rawSubmission && typeof rawSubmission === 'object' ? rawSubmission : {});
+            const itemInfo = parseNestedJson(submission.ItemInfo) || {};
+            const itemAttr = parseNestedJson(submission.ItemAttr) || {};
+            const fuseLabels = parseNestedJson(itemAttr.fuse_video_labels_v2) || {};
+            const topLabel = Array.isArray(fuseLabels.top_1) ? fuseLabels.top_1[0] : fuseLabels.top_1;
+            const levelOne = topLabel?.level_1 && typeof topLabel.level_1 === 'object'
+                ? topLabel.level_1
+                : {};
+            const expanded = { ...submission, ItemInfo: itemInfo, ItemAttr: itemAttr };
+            const customContent = itemInfo.CustomContent || {};
+            return {
+                meta: { realAssignTime: '', realResolveTime: '', durationSeconds: null },
+                summary: {
+                    source: '抖音投稿信息',
+                    author: submission.Userinfo?.NickName || '',
+                    authorCert: String(submission.Userinfo?.OriginalCert ?? ''),
+                    videoCreateTime: formatTimestamp(itemInfo.CreateTime),
+                    canPush: '', pcStatus: '', timeliness: '', timePeriod: '', auditSource: '',
+                    manualAuditOption: '', xgManualAuditOption: '', refuseReason: '', note: '', enqueueType: ''
+                },
+                recordType: 'douyin_submission',
+                originText: customContent.text || customContent.item_title || customContent.caption || '',
+                fuseVideoLabel: {
+                    tagName: levelOne.tag_name ?? '',
+                    tagId: levelOne.tag_id ?? '',
+                    probability: levelOne.prob ?? ''
+                },
+                candidates: [],
+                machineAudits: [],
+                materialItems: [],
+                details: flattenSubmissionFields(expanded, 'DouyinSubmissionInfo')
+            };
+        }
+
         function parseRecord(jsonObj) {
+            if (!jsonObj || typeof jsonObj !== 'object' || Array.isArray(jsonObj)) {
+                throw new Error('记录不是有效的 JSON 对象');
+            }
+            if (jsonObj.DouyinSubmissionInfo) return parseSubmissionRecord(jsonObj);
             const rawMainForm = parseNestedJson(jsonObj.mainForm) || jsonObj.mainForm;
             const mainForm = Array.isArray(rawMainForm) ? rawMainForm : [];
             const allFields = mainForm
@@ -1089,35 +1345,84 @@
         }
 
         function parseJsonText(text) {
-            const trimmed = text.trim();
-            if (!trimmed) return [];
+            const source = normalizeJsonSource(text);
+            if (!source) return [];
 
-            try {
-                const parsed = JSON.parse(trimmed);
-                if (Array.isArray(parsed)) {
-                    return parsed.map(parseRecord);
+            const records = [];
+            let failedCount = 0;
+
+            function appendValue(value) {
+                const decoded = decodeJsonLayers(value);
+                if (Array.isArray(decoded)) {
+                    decoded.forEach(appendValue);
+                    return;
                 }
-                return [parseRecord(parsed)];
-            } catch (e) {
-                const chunks = splitJsonObjects(trimmed);
-                const records = [];
-                for (const chunk of chunks) {
-                    try {
-                        const parsed = JSON.parse(chunk);
-                        if (Array.isArray(parsed)) {
-                            records.push(...parsed.map(parseRecord));
-                        } else {
-                            records.push(parseRecord(parsed));
-                        }
-                    } catch (e2) {
-                        // 单条损坏数据不影响其他记录。
-                    }
+                if (!decoded || typeof decoded !== 'object') {
+                    throw new Error('JSON 中没有可用记录');
                 }
-                if (records.length === 0) {
-                    throw new Error('无法解析输入的 JSON 文本');
+                const wrapper = ['records', 'items', 'list', 'data', 'result']
+                    .find(key => decoded[key] && (Array.isArray(decoded[key]) || typeof decoded[key] === 'object'));
+                if (!decoded.mainForm && !decoded.DouyinSubmissionInfo && wrapper) {
+                    appendValue(decoded[wrapper]);
+                    return;
                 }
-                return records;
+                records.push(parseRecord(decoded));
             }
+
+            function tryCandidate(candidate) {
+                try {
+                    appendValue(parseJsonValue(candidate));
+                    return true;
+                } catch (error) {
+                    failedCount++;
+                    return false;
+                }
+            }
+
+            if (!tryCandidate(source)) {
+                const lines = source.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+                lines.forEach(candidate => tryCandidate(candidate));
+                if (records.length === 0) {
+                    splitJsonObjects(source).forEach(candidate => tryCandidate(candidate));
+                }
+            }
+
+            if (records.length === 0) {
+                throw new Error('无法解析输入内容，请确认 JSON 是否完整');
+            }
+            records.parseStats = { failedCount };
+            return records;
+        }
+
+        async function parseJsonTextResponsive(text, onProgress) {
+            const source = normalizeJsonSource(text);
+            const lines = source.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+            const jsonLineCount = lines.reduce((count, line) => {
+                return count + (/^[{[]/.test(line) && /[}\]]$/.test(line) ? 1 : 0);
+            }, 0);
+            if (lines.length < 50 || jsonLineCount < lines.length * 0.8) {
+                return parseJsonText(source);
+            }
+
+            const records = [];
+            let failedCount = 0;
+            const batchSize = 25;
+            for (let index = 0; index < lines.length; index++) {
+                try {
+                    const lineRecords = parseJsonText(lines[index]);
+                    failedCount += lineRecords.parseStats?.failedCount || 0;
+                    records.push(...lineRecords);
+                } catch (error) {
+                    failedCount++;
+                }
+                if ((index + 1) % batchSize === 0) {
+                    onProgress?.(index + 1, lines.length, records.length);
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
+            }
+            if (records.length === 0) return parseJsonText(source);
+            records.parseStats = { failedCount };
+            return records;
         }
 
         function splitJsonObjects(text) {
@@ -1183,6 +1488,7 @@
 
             resultsCount.textContent = `共解析 ${records.length} 条记录`;
             resultsSection.style.display = 'block';
+            refreshExportFields();
             renderCurrentRecord();
         }
 
@@ -1191,8 +1497,9 @@
             if (!record) return;
 
             const isMaterialAudit = record.recordType === 'material_manual_audit';
+            const isSubmission = record.recordType === 'douyin_submission';
             const pushStatus = getPushStatus(record.summary);
-            const author = [record.summary.author, record.summary.authorCert].filter(Boolean).join(' / ');
+            const author = [record.summary.author, record.summary.authorCert].filter(value => value !== '').join(' / ');
             const source = record.summary.source || (isMaterialAudit ? '素材人工审核' : '来源未填写');
             const timeParts = [];
             if (record.summary.videoCreateTime) timeParts.push(`视频：${record.summary.videoCreateTime}`);
@@ -1212,13 +1519,43 @@
             }
             html += `<div class="record-info-line"><strong>时间：</strong>${escapeHtml(timeParts.join('　') || '未填写')}</div>`;
             html += '</div>';
-            html += '<div class="push-status-panel" aria-label="是否可推">';
-            html += `<div class="push-status-option yes ${pushStatus === 'yes' ? 'active' : ''}"><strong>是</strong><small>可推</small></div>`;
-            html += `<div class="push-status-option pc ${pushStatus === 'pc' ? 'active' : ''}"><strong>PC</strong><small>转 PC</small></div>`;
-            html += `<div class="push-status-option no ${pushStatus === 'no' ? 'active' : ''}"><strong>否</strong><small>不可推</small></div>`;
-            html += '</div></header>';
+            if (!isSubmission) {
+                html += '<div class="push-status-panel" aria-label="是否可推">';
+                html += `<div class="push-status-option yes ${pushStatus === 'yes' ? 'active' : ''}"><strong>是</strong><small>可推</small></div>`;
+                html += `<div class="push-status-option pc ${pushStatus === 'pc' ? 'active' : ''}"><strong>PC</strong><small>转 PC</small></div>`;
+                html += `<div class="push-status-option no ${pushStatus === 'no' ? 'active' : ''}"><strong>否</strong><small>不可推</small></div>`;
+                html += '</div>';
+            }
+            html += '</header>';
 
-            if (isMaterialAudit) {
+            if (isSubmission) {
+                const detailMap = new Map(record.details.map(field => [field.name, field.value]));
+                const fuseLabel = record.fuseVideoLabel || {};
+                const highlightedFields = [
+                    ['tag_name', fuseLabel.tagName],
+                    ['tag_id', fuseLabel.tagId],
+                    ['prob', fuseLabel.probability]
+                ];
+                html += '<section class="fuse-label-summary" aria-label="一级融合视频标签">';
+                highlightedFields.forEach(([name, value]) => {
+                    const displayValue = value === '' || value === null || value === undefined ? '未填写' : String(value);
+                    html += '<div class="fuse-label-item">';
+                    html += `<span class="fuse-label-key">${escapeHtml(name)}</span>`;
+                    html += `<span class="fuse-label-value">${escapeHtml(displayValue)}</span>`;
+                    html += '</div>';
+                });
+                html += '</section>';
+                const facts = [
+                    `作品 ID：${detailMap.get('DouyinSubmissionInfo.ItemID') || detailMap.get('DouyinSubmissionInfo.ItemInfo.Id') || '未填写'}`,
+                    `用户 ID：${detailMap.get('DouyinSubmissionInfo.ItemInfo.UserId') || '未填写'}`,
+                    `媒体类型：${detailMap.get('DouyinSubmissionInfo.ItemInfo.MediaType') || '未填写'}`
+                ];
+                html += `<div class="timeliness-line">${escapeHtml(facts.join('　｜　'))}</div>`;
+                html += '<section class="record-block">';
+                html += '<h3 class="block-title">投稿原文</h3>';
+                html += `<div class="origin-text">${escapeHtml(record.originText || '未填写')}</div>`;
+                html += '</section>';
+            } else if (isMaterialAudit) {
                 const auditFacts = [
                     `人工审核：${record.summary.manualAuditOption || '未填写'}`,
                     `西瓜人工审核：${record.summary.xgManualAuditOption || '未填写'}`,
@@ -1312,7 +1649,7 @@
 
             if (record.details.length > 0) {
                 html += '<section class="record-block">';
-                html += '<details class="details-toggle"><summary>其他审核字段</summary>';
+                html += `<details class="details-toggle"><summary>${isSubmission ? '全部投稿字段' : '其他审核字段'}</summary>`;
                 html += '<table class="field-table">';
                 record.details.forEach(field => {
                     const displayValue = field.value === '' ? '未填写' : field.value;
@@ -1351,18 +1688,25 @@
             return div.innerHTML;
         }
 
-        function handleTextParse() {
-            const input = document.getElementById('jsonInput').value.trim();
+        async function handleTextParse() {
+            const input = document.getElementById('jsonInput').value;
             const status = document.getElementById('textParseStatus');
-            if (!input) {
+            if (!input.trim()) {
                 status.textContent = '请先粘贴 JSON 文本';
                 return;
             }
+            status.textContent = '正在解析...';
+            status.style.color = 'var(--muted)';
+            await new Promise(resolve => requestAnimationFrame(resolve));
             try {
-                const records = parseJsonText(input);
+                const records = await parseJsonTextResponsive(input, (processed, total, success) => {
+                    status.textContent = `正在解析 ${processed} / ${total}，已成功 ${success} 条`;
+                });
+                const recoveredCount = records.parseStats?.failedCount || 0;
                 renderResults(records);
-                status.textContent = `成功解析 ${records.length} 条记录`;
-                status.style.color = 'var(--green)';
+                status.textContent = `成功解析 ${records.length} 条记录`
+                    + (recoveredCount ? `，已容错跳过 ${recoveredCount} 个异常片段` : '');
+                status.style.color = recoveredCount ? 'var(--orange, #d97706)' : 'var(--green)';
             } catch (e) {
                 status.textContent = '解析失败：' + e.message;
                 status.style.color = 'var(--red)';
@@ -1383,7 +1727,7 @@
             status.style.color = 'var(--muted)';
 
             const reader = new FileReader();
-            reader.onload = function(e) {
+            reader.onload = async function(e) {
                 try {
                     const data = new Uint8Array(e.target.result);
                     const workbook = XLSX.read(data, { type: 'array' });
@@ -1421,16 +1765,22 @@
 
                     const allRecords = [];
                     let failedCount = 0;
+                    let recoveredCount = 0;
                     for (let r = headerRowIndex + 1; r < sourceRows.length; r++) {
                         const cell = sourceRows[r][colIndex];
                         if (cell && String(cell).trim()) {
                             const cellText = String(cell).trim();
                             try {
                                 const records = parseJsonText(cellText);
+                                recoveredCount += records.parseStats?.failedCount || 0;
                                 allRecords.push(...records);
                             } catch (e2) {
                                 failedCount++;
                             }
+                        }
+                        if ((r - headerRowIndex) % 25 === 0) {
+                            status.textContent = `正在解析第 ${r - headerRowIndex} / ${sourceRows.length - headerRowIndex - 1} 行，已成功 ${allRecords.length} 条`;
+                            await new Promise(resolve => setTimeout(resolve, 0));
                         }
                     }
 
@@ -1442,8 +1792,9 @@
 
                     renderResults(allRecords);
                     status.textContent = `工作表「${sourceSheetName}」成功解析 ${allRecords.length} 条记录`
-                        + (failedCount ? `，${failedCount} 条失败` : '');
-                    status.style.color = 'var(--green)';
+                        + (failedCount ? `，${failedCount} 个单元格失败` : '')
+                        + (recoveredCount ? `，容错跳过 ${recoveredCount} 个异常片段` : '');
+                    status.style.color = failedCount || recoveredCount ? 'var(--orange, #d97706)' : 'var(--green)';
                 } catch (e) {
                     status.textContent = '文件解析失败：' + e.message;
                     status.style.color = 'var(--red)';
@@ -1452,11 +1803,33 @@
             reader.readAsArrayBuffer(file);
         }
 
-        function buildExportRows() {
-            return parsedRecords.map((record, index) => {
+        function buildExportRows(applySelection = true, sourceRecords = parsedRecords) {
+            const labelFields = ['tag_name', 'tag_id', 'prob'];
+            const fastLabelExport = applySelection
+                && selectedExportFields.size > 0
+                && [...selectedExportFields].every(field => labelFields.includes(field));
+            const rows = sourceRecords.map((record, index) => {
+                const fuseLabel = record.fuseVideoLabel || {};
+                if (fastLabelExport) {
+                    const labelRow = {
+                        tag_name: fuseLabel.tagName ?? '',
+                        tag_id: fuseLabel.tagId ?? '',
+                        prob: fuseLabel.probability ?? ''
+                    };
+                    return Object.fromEntries(
+                        Object.entries(labelRow).filter(([name]) => selectedExportFields.has(name))
+                    );
+                }
                 const row = {
+                    ...(record.recordType === 'douyin_submission' ? {
+                        tag_name: fuseLabel.tagName ?? '',
+                        tag_id: fuseLabel.tagId ?? '',
+                        prob: fuseLabel.probability ?? ''
+                    } : {}),
                     '记录编号': index + 1,
-                    '记录类型': record.recordType === 'material_manual_audit' ? '素材人工审核' : 'AIGC 审核',
+                    '记录类型': record.recordType === 'material_manual_audit'
+                        ? '素材人工审核'
+                        : (record.recordType === 'douyin_submission' ? '抖音投稿信息' : 'AIGC 审核'),
                     '分配时间': record.meta.realAssignTime,
                     '完成时间': record.meta.realResolveTime,
                     '审核耗时': formatDuration(record.meta.durationSeconds),
@@ -1510,6 +1883,48 @@
                 });
                 return row;
             });
+            if (!applySelection) return rows;
+            return rows.map(row => Object.fromEntries(
+                Object.entries(row).filter(([name]) => selectedExportFields.has(name))
+            ));
+        }
+
+        function refreshExportFields() {
+            const submissionDefaults = ['tag_name', 'tag_id', 'prob'];
+            const onlySubmissions = parsedRecords.length > 0
+                && parsedRecords.every(record => record.recordType === 'douyin_submission');
+            const fieldSource = onlySubmissions ? parsedRecords.slice(0, 1) : parsedRecords;
+            const rows = buildExportRows(false, fieldSource);
+            const fields = Array.from(new Set(rows.flatMap(row => Object.keys(row))));
+            selectedExportFields = new Set(onlySubmissions ? submissionDefaults : fields);
+            exportFieldList.replaceChildren(...fields.map(field => {
+                const label = document.createElement('label');
+                label.className = 'field-picker-option';
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.value = field;
+                checkbox.checked = selectedExportFields.has(field);
+                const text = document.createElement('span');
+                text.textContent = field;
+                label.append(checkbox, text);
+                return label;
+            }));
+        }
+
+        function setAllExportFields(checked) {
+            exportFieldList.querySelectorAll('input[type="checkbox"]').forEach(checkbox => {
+                checkbox.checked = checked;
+                if (checked) selectedExportFields.add(checkbox.value);
+                else selectedExportFields.delete(checkbox.value);
+            });
+        }
+
+        function getSelectedRows() {
+            if (selectedExportFields.size === 0) {
+                showToast('请至少选择一个导出字段');
+                return null;
+            }
+            return buildExportRows();
         }
 
         function exportExcel() {
@@ -1518,7 +1933,8 @@
                 return;
             }
 
-            const rows = buildExportRows();
+            const rows = getSelectedRows();
+            if (!rows) return;
             const worksheet = XLSX.utils.json_to_sheet(rows);
             worksheet['!cols'] = Object.keys(rows[0]).map(key => ({
                 wch: /文案|内容|标题/.test(key) ? 42 : 18
@@ -1535,7 +1951,8 @@
                 return;
             }
 
-            const rows = buildExportRows();
+            const rows = getSelectedRows();
+            if (!rows) return Promise.resolve(false);
             const headers = Array.from(new Set(rows.flatMap(row => Object.keys(row))));
             const tsv = [
                 headers.join('\t'),
@@ -1544,14 +1961,18 @@
 
             return navigator.clipboard.writeText(tsv).then(() => {
                 showToast('已复制到剪贴板');
+                return true;
             }).catch(() => {
                 showToast('复制失败，请手动选择');
+                return false;
             });
         }
 
         async function openFeishuSheet() {
-            await copyResult();
-            window.open('https://bytedance.larkoffice.com/sheets/X3lzs3LKOhsJ1Bth11Cc7wXvndf', '_blank');
+            const copied = await copyResult();
+            if (copied) {
+                window.open('https://bytedance.larkoffice.com/sheets/X3lzs3LKOhsJ1Bth11Cc7wXvndf', '_blank');
+            }
         }
 
         // Tab switching
@@ -1586,6 +2007,13 @@
         document.getElementById('exportExcelBtn').addEventListener('click', exportExcel);
         document.getElementById('copyResultBtn').addEventListener('click', copyResult);
         document.getElementById('feishuSheetBtn').addEventListener('click', openFeishuSheet);
+        document.getElementById('selectAllFieldsBtn').addEventListener('click', () => setAllExportFields(true));
+        document.getElementById('clearAllFieldsBtn').addEventListener('click', () => setAllExportFields(false));
+        exportFieldList.addEventListener('change', event => {
+            if (!event.target.matches('input[type="checkbox"]')) return;
+            if (event.target.checked) selectedExportFields.add(event.target.value);
+            else selectedExportFields.delete(event.target.value);
+        });
         previousCaseBtn.addEventListener('click', () => changeCase(-1));
         nextCaseBtn.addEventListener('click', () => changeCase(1));
 

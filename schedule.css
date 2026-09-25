@@ -161,6 +161,14 @@ h1 {
     color: var(--primary-dark);
 }
 
+.ai-login-link {
+    text-decoration: none;
+}
+
+.ai-login-link[hidden] {
+    display: none;
+}
+
 .hero-actions {
     display: grid;
     justify-items: start;

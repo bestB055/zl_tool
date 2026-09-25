@@ -157,6 +157,26 @@ h1 {
     gap: 10px;
     flex-wrap: wrap;
 }
+.ai-login-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 42px;
+    padding: 0 14px;
+    border: 1px solid rgba(36, 107, 254, 0.16);
+    border-radius: 14px;
+    background: #fff;
+    color: var(--primary-dark);
+    font-size: 0.86rem;
+    font-weight: 800;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+.ai-login-link:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 10px 24px rgba(36, 107, 254, 0.12);
+}
+.ai-login-link[hidden] { display: none; }
 .ai-generate-btn:disabled {
     cursor: wait;
     opacity: 0.65;

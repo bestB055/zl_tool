@@ -44,7 +44,7 @@ jobs:
       - name: Prepare static site
         env:
           DOUBAO_SEARCH_API_URL: ${{ vars.DOUBAO_SEARCH_API_URL }}
-          DEEPSEEK_API_KEY: ${{ vars.DEEPSEEK_API_KEY }}
+          DEEPSEEK_PROXY_API_URL: ${{ vars.DEEPSEEK_PROXY_API_URL }}
           DOUBAO_SEARCH_API_KEY: ${{ vars.DOUBAO_SEARCH_API_KEY }}
         run: |
           mkdir -p site
@@ -56,7 +56,7 @@ jobs:
 
           config = {
               "DOUBAO_SEARCH_API_URL": os.environ.get("DOUBAO_SEARCH_API_URL", ""),
-              "DEEPSEEK_API_KEY": os.environ.get("DEEPSEEK_API_KEY", ""),
+              "DEEPSEEK_PROXY_API_URL": os.environ.get("DEEPSEEK_PROXY_API_URL", ""),
               "DOUBAO_SEARCH_API_KEY": os.environ.get("DOUBAO_SEARCH_API_KEY", ""),
           }
           lines = ["window.DAIBAN_HOME_CONFIG = {"]
