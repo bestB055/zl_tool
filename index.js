@@ -1,11 +1,8 @@
 const MAX_COLUMNS = 5;
-const DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
-const DEEPSEEK_API_KEY_STORAGE = 'split-word-deepseek-api-key';
 const DEPLOYMENT_CONFIG = window.DAIBAN_HOME_CONFIG || {};
 const DOUBAO_SEARCH_API_URL = String(DEPLOYMENT_CONFIG.DOUBAO_SEARCH_API_URL || '').trim();
-const CONFIGURED_DEEPSEEK_API_KEY = normalizeApiKey(DEPLOYMENT_CONFIG.DEEPSEEK_API_KEY || '');
+const DEEPSEEK_PROXY_API_URL = String(DEPLOYMENT_CONFIG.DEEPSEEK_PROXY_API_URL || '').trim();
 const CONFIGURED_DOUBAO_SEARCH_API_KEY = normalizeApiKey(DEPLOYMENT_CONFIG.DOUBAO_SEARCH_API_KEY || '');
-const DOUBAO_SEARCH_API_KEY_STORAGE = 'split-word-doubao-search-api-key';
 let columnCount = 2;
 let manualKeywords = [];
 let modalLines = [];
@@ -219,63 +216,73 @@ function normalizeApiKey(value) {
     return sanitizeText(value).trim().replace(/^Bearer\s+/i, '');
 }
 
-function getStoredKey(storageKey) {
-    try { return localStorage.getItem(storageKey) || ''; } catch { return ''; }
-}
-
-function saveStoredKey(storageKey, value) {
-    localStorage.setItem(storageKey, value);
-}
-
-function clearStoredKey(storageKey, inputId, label) {
-    try { localStorage.removeItem(storageKey); } catch {}
-    document.getElementById(inputId).value = '';
-    updateApiKeyStatus(`已清除${label}。`);
-}
-
 function updateApiKeyStatus(message = '', isError = false) {
     const status = document.getElementById('aiGeneratorStatus');
-    const deepSeekReady = Boolean(CONFIGURED_DEEPSEEK_API_KEY);
+    const deepSeekReady = Boolean(DEEPSEEK_PROXY_API_URL);
     const doubaoReady = Boolean(CONFIGURED_DOUBAO_SEARCH_API_KEY);
-    status.textContent = message || `环境配置：DeepSeek Key ${deepSeekReady ? '已配置' : '未配置'}；豆包搜索 Key ${doubaoReady ? '已配置' : '未配置'}。`;
+    status.textContent = message || `环境配置：AI 服务代理 ${deepSeekReady ? '已配置' : '未配置'}；豆包搜索 Key ${doubaoReady ? '已配置' : '未配置'}。`;
     status.classList.toggle('error', isError);
     status.classList.toggle('api-key-saved', !isError && deepSeekReady && doubaoReady);
 }
 
-function extractJson(content, stage = 'DeepSeek') {
-    const cleaned = sanitizeText(content).replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
-    const start = cleaned.indexOf('{');
-    const end = cleaned.lastIndexOf('}');
-    if (start < 0 || end <= start) throw new Error(`${stage}未返回有效 JSON`);
+function getDeepSeekAuthUrl() {
+    if (!DEEPSEEK_PROXY_API_URL) return '';
     try {
-        return JSON.parse(cleaned.slice(start, end + 1));
+        const url = new URL(DEEPSEEK_PROXY_API_URL);
+        url.pathname = '/auth-check';
+        url.search = '';
+        url.hash = '';
+        return url.toString();
     } catch {
-        throw new Error(`${stage}返回的 JSON 无法解析`);
+        return '';
     }
 }
 
-async function callDeepSeekJson(apiKey, stage, systemPrompt, input) {
+function configureAiServiceLogin() {
+    const link = document.getElementById('aiServiceLoginLink');
+    const authUrl = getDeepSeekAuthUrl();
+    if (!link) return;
+    if (!authUrl) {
+        link.hidden = true;
+        link.removeAttribute('href');
+        return;
+    }
+    link.hidden = false;
+    link.href = authUrl;
+}
+
+async function callDeepSeekJson(operation, stage, input) {
+    if (!DEEPSEEK_PROXY_API_URL) {
+        throw new Error(`${stage}失败：AI 服务代理未配置`);
+    }
+
     let response;
     try {
-        response = await fetch(DEEPSEEK_API_URL, {
+        response = await fetch(DEEPSEEK_PROXY_API_URL, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-            body: JSON.stringify({
-                model: 'deepseek-v4-flash',
-                temperature: 0.15,
-                response_format: { type: 'json_object' },
-                messages: [
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: input },
-                ],
-            }),
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ operation, input }),
         });
     } catch {
-        throw new Error(`${stage}网络请求失败`);
+        throw new Error(`${stage}网络请求失败，请先登录 AI 服务`);
+    }
+
+    const contentType = response.headers.get('Content-Type') || '';
+    if (!contentType.includes('application/json')) {
+        throw new Error(`${stage}未获得授权，请先登录 AI 服务`);
     }
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(`${stage}失败：${payload.error?.message || `HTTP ${response.status}`}`);
-    return extractJson(payload.choices?.[0]?.message?.content || '', stage);
+    if (response.status === 401 || response.status === 403) {
+        throw new Error(`${stage}未获得授权，请先登录 AI 服务`);
+    }
+    if (!response.ok) {
+        throw new Error(`${stage}失败：${payload.message || payload.error || `HTTP ${response.status}`}`);
+    }
+    if (!payload.result || typeof payload.result !== 'object') {
+        throw new Error(`${stage}返回结果无效`);
+    }
+    return payload.result;
 }
 
 function normalizeCandidate(candidate, defaultOrigin = 'evidence', rejectionLog = []) {
@@ -712,12 +719,11 @@ function prepareEventClue(data, source) {
     };
 }
 
-async function analyzeEventClue(deepKey, source) {
+async function analyzeEventClue(source) {
     const data = await callDeepSeekJson(
-        deepKey,
+        'event-clue-analysis',
         '事件线索分析',
-        '你是新闻管控规则编辑，只输出JSON对象。输入通常只有一句话。返回eventSummary、expandedSource、verifiedFacts、inferredFacts、coreEntities、candidateTerms、inferredEntities、locationTerms、behaviorTerms、enrichmentQueries。locationTerms和behaviorTerms每项格式为{"term":"原子词","origin":"evidence或inferred","reason":"来源"}。locationTerms要提取可独立命中的行政区简称、地标简称、园区简称、河湖水体名、街乡镇名，禁止只保留完整长地名；behaviorTerms要扩展同一风险场景的原文行为、规范同义词、常见口语表达、活动方式和风险后果。比如涉水场景应考虑野泳、跳水、桨板、涉水、玩水、游泳、户外游泳、下饺子、溺水等，但必须结合当前事件。enrichmentQueries生成3至6条，专门搜索地标内部水体名、属地简称、行为同义词、媒体口语写法和官方通报。无法确认的内容标inferred。',
-        JSON.stringify({ source }),
+        { source },
     );
     return prepareEventClue(data, source);
 }
@@ -749,16 +755,15 @@ async function runEnrichmentSearch(apiKey, source, clue) {
     return { queries, successCount, samples };
 }
 
-async function buildEventDossier(deepKey, source, clue, evidenceSamples) {
+async function buildEventDossier(source, clue, evidenceSamples) {
     const data = await callDeepSeekJson(
-        deepKey,
+        'evidence-merge',
         '搜索证据归并',
-        '你是新闻管控规则证据归并器，只输出JSON对象。返回eventSummary、expandedSource、verifiedFacts、inferredFacts、coreEntities、candidateTerms、inferredEntities、locationTerms、behaviorTerms、enrichmentQueries。locationTerms和behaviorTerms每项格式为{"term":"原子词","origin":"evidence或inferred","reason":"来源"}。必须从搜索标题和正文找出输入未提及但真实存在的细粒度地点，例如公园内部河流、水体、街乡镇；同时扩展行为的同义词、口语、活动方式和风险后果。不要把“完整公园名”与三个行为塞进少量摘要组合，而要为后续“地点轴×行为轴”提供完整原子词集合。verifiedFacts只能写搜索证据直接支持的事实；合理推断必须标inferred。',
-        JSON.stringify({
+        {
             source,
             clue,
             evidenceSamples: buildSamplePayload(evidenceSamples.slice(0, 16)),
-        }),
+        },
     );
     const dossier = prepareEventClue(data, source);
     dossier.coreEntities = [...new Set([...clue.coreEntities, ...dossier.coreEntities])];
@@ -819,14 +824,13 @@ function normalizeKeywordCandidates(data) {
     return [...unique.values()];
 }
 
-async function buildKeywordSearchPlan(deepKey, source) {
+async function buildKeywordSearchPlan(source) {
     console.group('[AI 步骤 1/3] 检索计划生成');
     console.log('输入原文', source);
     const data = await callDeepSeekJson(
-        deepKey,
+        'keyword-search-plan',
         '检索计划生成',
-        '你是中文新闻检索规划器，只输出JSON对象。返回queries数组，提供5条不重复、适合检索近一个月新闻的简短搜索词。输入可能含新闻链接；若含链接，须提取其标题或核心事件再生成查询。第一条应最贴近原始事件，其余查询分别补充事件主体、地点、关键动作、处置进展或同义说法。不得编造事实。',
-        JSON.stringify({ source }),
+        { source },
     );
     console.log('DeepSeek 返回', data);
     // 原始输入可能过长，不适合直接作为搜索词；完全依赖 DeepSeek 生成的查询。
@@ -968,12 +972,12 @@ function autoFillPrimaryKeywordColumns(candidates) {
 
 async function generateKeywordCandidates() {
     const source = sanitizeText(document.getElementById('newsSourceInput').value).trim();
-    const deepKey = CONFIGURED_DEEPSEEK_API_KEY;
     const doubaoKey = CONFIGURED_DOUBAO_SEARCH_API_KEY;
     const button = document.getElementById('aiGenerateBtn');
     if (!source) return setPipelineStatus('请先输入新闻标题、正文或链接。', true);
     if (!DOUBAO_SEARCH_API_URL) return setPipelineStatus('请先配置 Cloudflare Worker 搜索代理地址。', true);
-    if (!deepKey || !doubaoKey) return setPipelineStatus('请先在 app-config.js 或 GitHub Variables 中配置 DeepSeek API Key 和豆包搜索 API Key。', true);
+    if (!DEEPSEEK_PROXY_API_URL) return setPipelineStatus('请先配置 DeepSeek AI 服务代理地址。', true);
+    if (!doubaoKey) return setPipelineStatus('请先在 app-config.js 或 GitHub Variables 中配置豆包搜索 API Key。', true);
 
     button.disabled = true;
     button.textContent = '正在联网检索…';
@@ -981,25 +985,15 @@ async function generateKeywordCandidates() {
     aiPipelineState.selectedIds.clear();
     try {
         setPipelineStatus('1/3 正在规划近一个月新闻检索…');
-        const queries = await buildKeywordSearchPlan(deepKey, source);
+        const queries = await buildKeywordSearchPlan(source);
         setPipelineStatus('2/3 正在联网搜索并筛选新闻来源…');
         const samples = await runKeywordSearch(doubaoKey, queries);
         console.group('[AI 步骤 3/3] 关键词提取');
         console.log('搜索样本数', samples.length);
         const data = await callDeepSeekJson(
-            deepKey,
+            'keyword-extraction',
             '新闻关键词提取',
-            `你是新闻舆情关键词编辑，只输出JSON对象。基于输入和联网搜索结果，返回eventSummary、sources、categories。
-eventSummary：用20至30个汉字概括最终事实、定性结果、过程或处置。
-sources：从搜索结果中选3至5条最相关且尽量为近一个月的新闻，返回{"title":"标题","url":"链接"}；不得编造链接。
-categories必须含event、person、location、action四个数组，其中person代表“主体”。每项格式为{"term":"完整词语","tier":"high|medium|low","origin":"evidence|inferred","relevance":0-100,"reason":"简短依据"}。
-term必须兼顾“意思完整”和“含义简洁”：目标是高效召回新闻相关文本，不是复述标题。优先输出可组合、可独立检索的短颗粒词，一般为2至6字；专名、队名、机构名、品牌名、部门名、地名和人名可适当更长但必须保持完整，例如“阿根廷队”“重庆市教育局”可以保留。禁止机械按两个字切分专名，例如“阿根廷队”不得拆成“阿根”“廷队”。禁止输出意义过杂、文本过长、包含多个主体/地点/动作/结果的复合短语，例如“慕田峪长城导游插队辱骂事件”“女游客劝阻反遭辱骂”不合格，应拆成“慕田峪”“长城”“导游”“插队”“辱骂”“女游客”“劝阻”等自然关键词。近义词、同义词、口语词必须归入对应四类，不能另建分类。
-event：事件最终事实、定性结果、全过程涉及的核心事件名词，至少输出12个，覆盖事件名、定性、后果、趋势、处置状态、同义表达。
-person：新闻行为主体和参与主体，不限于当事人，还包括品牌、部门、机构、组织、平台、产品、球队、国家、群体、身份、物品名称、人物姓名、别称和昵称。
-location：具体省市区县乡村镇街道、场所、平台、单位、场景，以及地名别称；输入较泛时可结合证据扩展周边具体地名。
-action：关键数字金额年份数量时间、实物、政策文件、社会事件概念、动词、处置、结果和趋势，至少输出20个。必须覆盖原文动作、处置动作、结果动作、趋势词、官方表述、民间口语表达和风险后果。
-high表示搜索证据直接且高度相关；medium表示证据相关或常用同义扩展；low表示合理但需人工确认的扩展。`,
-            JSON.stringify({
+            {
                 source,
                 searchResults: samples.map(item => ({
                     title: item.title,
@@ -1007,7 +1001,7 @@ high表示搜索证据直接且高度相关；medium表示证据相关或常用�
                     publishTime: item.publishTime,
                     content: item.content.slice(0, 1000),
                 })),
-            }),
+            },
         );
         const candidates = normalizeKeywordCandidates(data);
         if (!candidates.length) throw new Error('模型未返回合法关键词，请换用更具体的新闻标题');
@@ -1058,187 +1052,18 @@ high表示搜索证据直接且高度相关；medium表示证据相关或常用�
     }
 }
 
-async function repairCandidateSet(deepKey, dossier, plan, validCandidates, rejectedCandidates) {
+async function repairCandidateSet(dossier, plan, validCandidates, rejectedCandidates) {
     const data = await callDeepSeekJson(
-        deepKey,
+        'candidate-repair',
         '候选格式修复',
-        '你是管控词候选修复器，只输出JSON对象，字段candidates。必须返回至少3项。每项格式为{"words":["词1","词2"],"origin":"evidence或inferred","reason":"简短原因","sourceTerms":["词1","词2"]}。words只能有2或3个互不重复的原子词，不得输出句子。搜索证据支持的词标evidence，合理推断的词标inferred。',
-        JSON.stringify({
+        {
             eventDossier: dossier,
             planEntities: plan.coreEntities,
             validCandidates: validCandidates.map(item => ({ words: item.words, origin: item.origin })),
             rejectedReasons: rejectedCandidates.slice(0, 20),
-        }),
+        },
     );
     return Array.isArray(data.candidates) ? data.candidates : [];
-}
-
-async function generateWithDeepSeek() {
-    const source = sanitizeText(document.getElementById('newsSourceInput').value).trim();
-    const deepInput = document.getElementById('deepseekApiKeyInput');
-    const doubaoInput = document.getElementById('doubaoApiKeyInput');
-    const deepKey = normalizeApiKey(deepInput.value || getStoredKey(DEEPSEEK_API_KEY_STORAGE));
-    const doubaoKey = normalizeApiKey(doubaoInput.value || getStoredKey(DOUBAO_SEARCH_API_KEY_STORAGE));
-    const button = document.getElementById('aiGenerateBtn');
-    if (!source) return setPipelineStatus('请先输入一句话事件线索或新闻原文。', true), document.getElementById('newsSourceInput').focus();
-    if (!DOUBAO_SEARCH_API_URL) return setPipelineStatus('请先配置 Cloudflare Worker 搜索代理地址。', true);
-    if (!deepKey) return setPipelineStatus('请输入 DeepSeek API Key。', true), deepInput.focus();
-    if (!doubaoKey) return setPipelineStatus('请输入具有联网问答权限的火山引擎访问控制 API Key。', true), doubaoInput.focus();
-    try {
-        if (deepInput.value.trim()) saveStoredKey(DEEPSEEK_API_KEY_STORAGE, deepKey);
-        if (doubaoInput.value.trim()) saveStoredKey(DOUBAO_SEARCH_API_KEY_STORAGE, doubaoKey);
-        deepInput.value = '';
-        doubaoInput.value = '';
-    } catch {}
-
-    button.disabled = true;
-    button.textContent = '正在生成…';
-    aiPipelineState.source = source;
-    aiPipelineState.warnings = [];
-    aiPipelineState.selectedIds.clear();
-    aiPipelineState.diagnostics = {
-        enrichmentQueries: 0,
-        enrichmentSuccesses: 0,
-        enrichmentSamples: 0,
-        verifiedFacts: 0,
-        inferredFacts: 0,
-        rawCandidates: 0,
-        validCandidates: 0,
-        repairedCandidates: 0,
-        fallbackCandidates: 0,
-        locationTerms: 0,
-        behaviorTerms: 0,
-        coverageCandidates: 0,
-        rejectedCandidates: [],
-    };
-    try {
-        setPipelineStatus('1/12 正在结构化分析事件线索…');
-        const clue = await analyzeEventClue(deepKey, source);
-
-        setPipelineStatus('2/12 正在联网补充同事件新闻…');
-        const enrichment = await runEnrichmentSearch(doubaoKey, source, clue);
-        aiPipelineState.diagnostics.enrichmentQueries = enrichment.queries.length;
-        aiPipelineState.diagnostics.enrichmentSuccesses = enrichment.successCount;
-        aiPipelineState.diagnostics.enrichmentSamples = enrichment.samples.length;
-
-        setPipelineStatus('3/12 正在归并搜索证据与合理推断…');
-        const dossier = await buildEventDossier(deepKey, source, clue, enrichment.samples);
-        aiPipelineState.eventDossier = dossier;
-        aiPipelineState.diagnostics.verifiedFacts = dossier.verifiedFacts.length;
-        aiPipelineState.diagnostics.inferredFacts = dossier.inferredFacts.length;
-        const coverage = buildCoverageCandidates(dossier);
-        aiPipelineState.diagnostics.locationTerms = coverage.locations.length;
-        aiPipelineState.diagnostics.behaviorTerms = coverage.behaviors.length;
-        aiPipelineState.diagnostics.coverageCandidates = coverage.candidates.length;
-
-        setPipelineStatus('4/12 正在生成事件搜索计划…');
-        const planData = await callDeepSeekJson(
-            deepKey,
-            '搜索计划生成',
-            '你是新闻事件检索规划器，只输出JSON对象。返回eventSummary、coreEntities、ambiguousEntities、queries和seedCandidates。queries.groupA生成2至6条同事件查询，groupB生成1至4条易误伤查询，groupC生成1至2条随机新闻查询。seedCandidates每项必须为{"words":["词1","词2"],"origin":"evidence或inferred","reason":"原因","sourceTerms":["词1","词2"]}，words只能有2或3个互不重复的原子词。',
-            JSON.stringify({ source, eventDossier: dossier }),
-        );
-        const plan = prepareSearchPlan(planData);
-        aiPipelineState.eventProfile = plan;
-        aiPipelineState.searchPlan = plan;
-
-        setPipelineStatus('5-7/12 正在搜索同事件、易误伤和随机样本…');
-        const searchResults = await runSearchPlan(doubaoKey, plan);
-        aiPipelineState.rawSearchResults = searchResults;
-
-        setPipelineStatus('8/12 正在归组样本并生成候选…');
-        const classifyData = await callDeepSeekJson(
-            deepKey,
-            '样本分类与候选生成',
-            '你是新闻样本分类与管控词候选生成器，只输出JSON对象。返回classification和candidates。classification将sample ID分入groupA、groupB、groupC、unknown。candidates至少3项，每项必须为{"words":["词1","词2"],"origin":"evidence或inferred","reason":"原因","sourceTerms":["词1","词2"]}；words只能有2或3个互不重复的原子词，优先2词。搜索证据支持的词标evidence，合理推断的词标inferred。',
-            JSON.stringify({
-                eventSummary: plan.eventSummary,
-                coreEntities: plan.coreEntities,
-                source,
-                eventDossier: dossier,
-                samples: buildSamplePayload(searchResults),
-                seedCandidates: plan.seedCandidates,
-            }),
-        );
-        // 推断扩写只用于理解和生成，不作为真实 Group A 样本参与评分。
-        const groups = createGroups(source, searchResults, classifyData.classification);
-        aiPipelineState.samples = groups;
-
-        setPipelineStatus('9/12 正在校验并修复候选格式…');
-        const modelCandidateInputs = [...plan.seedCandidates, ...(classifyData.candidates || [])];
-        // 轴信息充足时以“地点×行为”覆盖组合为主，避免混入“安全隐患,市民”等摘要式弱候选。
-        const rawCandidateInputs = coverage.candidates.length >= 6
-            ? coverage.candidates
-            : [...coverage.candidates, ...modelCandidateInputs];
-        const rejectedCandidates = [];
-        let validCandidates = normalizeCandidateList(rawCandidateInputs, 'evidence', rejectedCandidates);
-        aiPipelineState.diagnostics.rawCandidates = modelCandidateInputs.length;
-        aiPipelineState.diagnostics.validCandidates = validCandidates.length;
-        aiPipelineState.diagnostics.rejectedCandidates = rejectedCandidates;
-
-        if (validCandidates.length < 3) {
-            try {
-                const repairInputs = await repairCandidateSet(deepKey, dossier, plan, validCandidates, rejectedCandidates);
-                const beforeRepair = validCandidates.length;
-                validCandidates = normalizeCandidateList([...validCandidates, ...repairInputs], 'inferred', rejectedCandidates);
-                aiPipelineState.diagnostics.repairedCandidates = Math.max(0, validCandidates.length - beforeRepair);
-            } catch (error) {
-                aiPipelineState.warnings.push(`候选修复失败，已转入本地兜底：${error.message}`);
-            }
-        }
-        if (validCandidates.length < 3) {
-            const beforeFallback = validCandidates.length;
-            const fallback = buildFallbackCandidates(source, dossier, plan, validCandidates);
-            validCandidates = fallback.candidates;
-            aiPipelineState.diagnostics.fallbackCandidates = Math.max(0, validCandidates.length - beforeFallback);
-            aiPipelineState.diagnostics.rejectedCandidates.push(...fallback.rejectionLog);
-            if (validCandidates.length < 3 && fallback.availableTerms.length < 2) {
-                throw new Error('当前描述缺少至少两个可区分实体，请补充地点、主体、机构、品牌、产品或事件名称中的任意两项');
-            }
-        }
-        if (validCandidates.length < 3) {
-            throw new Error('当前事件可用原子词不足，无法形成至少3组有区分度的2至3词候选');
-        }
-
-        setPipelineStatus('10/12 正在计算召回、误伤和可用程度…');
-        const candidates = scoreCandidates(validCandidates, groups);
-        const boundary = candidates.filter(item =>
-            Math.min(Math.abs(item.score - 65), Math.abs(item.score - 85)) <= 8
-            || (item.recall >= 0.75 && (item.falsePositiveRate || 0) > 0.05)
-        ).slice(0, 20);
-        if (boundary.length) {
-            setPipelineStatus('11/12 正在让 DeepSeek 复核临界候选…');
-            try {
-                const reviewData = await callDeepSeekJson(
-                    deepKey,
-                    '临界候选复核',
-                    '你是候选词组复核器。只输出JSON对象，字段reviews。每项包含text、action(keep/upgrade/downgrade/reject)、reason。最多调整一档，不得修改统计数据。',
-                    JSON.stringify({
-                        eventSummary: plan.eventSummary,
-                        candidates: boundary.map(item => ({
-                            text: item.text, tier: item.tier, score: item.score,
-                            recall: item.recall, precision: item.precision,
-                            falsePositiveRate: item.falsePositiveRate,
-                            hitTitles: Object.fromEntries(Object.entries(item.hits).map(([key, values]) => [key, values.map(value => value.title).slice(0, 8)])),
-                        })),
-                    }),
-                );
-                applyReview(candidates, reviewData.reviews);
-            } catch (error) {
-                aiPipelineState.warnings.push(`临界复核失败：${error.message}`);
-            }
-        }
-        aiPipelineState.candidates = candidates;
-        candidates.filter(item => item.tier === 'high').forEach(item => aiPipelineState.selectedIds.add(item.id));
-        renderCandidateTiers();
-        setPipelineStatus(`12/12 完成：生成 ${candidates.length} 个候选，高可用项已自动勾选。`);
-        document.getElementById('aiCandidates').scrollIntoView({ behavior: 'smooth', block: 'start' });
-    } catch (error) {
-        setPipelineStatus(`生成失败：${error?.message || '未知错误'}`, true);
-    } finally {
-        button.disabled = false;
-        button.textContent = '生成管控词组';
-    }
 }
 
 function selectCandidateTier(tier, selected) {
@@ -1423,13 +1248,18 @@ function exportToCsv() {
     const seconds = String(expireDate.getSeconds()).padStart(2, '0');
     const expireTime = `${year}/${month}/${day} ${hours}:${minutes}:${seconds}`;
 
-    const worksheetData = [];
-    worksheetData.push(['stop_keyword', 'expire_time']);
-    lines.forEach(keyword => {
-        worksheetData.push([keyword, expireTime]);
-    });
-
-    const escapeCsvCell = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+    const normalizeCsvCell = (value) => String(value ?? '')
+        .replace(/\0/g, '')
+        .replace(/[\u0001-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+        .trim();
+    const escapeCsvCell = (value) => {
+        const text = normalizeCsvCell(value);
+        return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
+    const worksheetData = [
+        ['stop_keyword', 'expire_time'],
+        ...lines.map(keyword => [normalizeCsvCell(keyword), expireTime])
+    ];
     const csvContent = worksheetData
         .map(row => row.map(escapeCsvCell).join(','))
         .join('\r\n');
@@ -1590,6 +1420,7 @@ function showKeywordRescanMenu(chip) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    configureAiServiceLogin();
     updateApiKeyStatus();
     refreshCandidateTargetColumns();
     renderOutputChips(getOutputLines());
